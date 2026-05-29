@@ -5,7 +5,8 @@
       "Bash(Select-Object FullName, PSIsContainer)",
       "Bash(Sort-Object FullName)",
       "Bash(Format-Table -AutoSize)",
-      "Bash(git -C \"F:\\\\unity\\\\project\\\\mahjong\" status)"
+      "Bash(git -C \"F:\\\\unity\\\\project\\\\mahjong\" status)",
+      "Bash(git config *)"
     ]
   }
 }
