@@ -71,7 +71,11 @@ public class HandTileDrag : MonoBehaviour,
         bool inDiscardZone = IsTileFullyInDiscardZone();
         bool handIsFull = _handContainer.childCount == GameController.Instance.TargetHandSize + 1;
 
-        if (inDiscardZone && handIsFull)
+        bool canDiscard = inDiscardZone 
+            && handIsFull 
+            && GameController.Instance.State == GameState.HumanDiscard;
+
+        if (canDiscard)
         {
             GameController.Instance.DiscardTile(gameObject, eventData.position, _velocity);
             return;

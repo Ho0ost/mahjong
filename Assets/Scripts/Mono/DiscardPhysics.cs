@@ -15,9 +15,9 @@ public class DiscardPhysics : MonoBehaviour
     [SerializeField] private int solverIterations = 4;
 
     [Header("Tile Size (match your prefab's RectTransform)")]
-    [SerializeField] private float tileHalfWidth  = 62f;
-    [SerializeField] private float tileHalfHeight = 82f;
-    [SerializeField] private float dragPushSpeed = 250f;
+    [SerializeField] private float tileHalfWidth  = 37f;
+    [SerializeField] private float tileHalfHeight = 45f;
+    [SerializeField] private float dragPushSpeed  = 250f;
 
     private RectTransform _container;
     private readonly List<DiscardedTile> _tiles = new();
@@ -34,7 +34,7 @@ public class DiscardPhysics : MonoBehaviour
     {
         // Keep the tile inside the container from the start
         Rect b = _container.rect;
-        localPos.x = Mathf.Clamp(localPos.x, b.xMin + tileHalfWidth,  b.xMax - tileHalfWidth);
+        localPos.x = Mathf.Clamp(localPos.x, b.xMin + tileHalfWidth, b.xMax - tileHalfWidth);
         localPos.y = Mathf.Clamp(localPos.y, b.yMin + tileHalfHeight, b.yMax - tileHalfHeight);
 
         tileObj.transform.SetParent(transform, false);

@@ -3,8 +3,10 @@ using UnityEngine.UI;
 using TMPro;
 using UnityEngine.InputSystem;
 using System.Collections.Generic;
+using System.Collections;
 
-public enum MeldType { Pong, Kong, Chow }
+public enum MeldType  { Pong, Kong, Chow }
+public enum GameState { WaitingToStart, HumanDraw, HumanDiscard, AITurn, ClaimWindow, GameOver }
 
 public class GameController : MonoBehaviour
 {
@@ -22,12 +24,15 @@ public class GameController : MonoBehaviour
 
     [Header("Discard")]
     [SerializeField] private DiscardPhysics discardPhysics;
+    [SerializeField] private Color lastDiscardGlowColor = HexColor("#ffe066");
+    [SerializeField] private GameObject discardedTilePrefab;
 
     [Header("Scoring")]
     [SerializeField] private Transform scoringBox;
 
     [Header("Sprites")]
     [SerializeField] private Sprite[] tileSprites;
+    
 
     [Header("Meld Highlights")]
     [SerializeField] private Color pongColor = HexColor("#038249");
@@ -45,6 +50,15 @@ public class GameController : MonoBehaviour
     [Header("Mahjong")]
     [SerializeField] private GameObject mahjongPopupPrefab;
 
+    [Header("Claim")]
+    [SerializeField] private GameObject claimPopupPrefab;
+
+    [Header("Opponents")]
+    [SerializeField] private Transform leftOpponentHand;
+    [SerializeField] private Transform topOpponentHand;
+    [SerializeField] private Transform rightOpponentHand;
+    [SerializeField] private GameObject tileBackPrefab;
+
     private const float TileWidth   = 124f;
     private const float TileSpacing = 5f;
     private const float TileStep    = TileWidth + TileSpacing;
@@ -55,6 +69,19 @@ public class GameController : MonoBehaviour
 
     private Wall _wall = new Wall();
     private Canvas _canvas;
+    private GameState _state = GameState.WaitingToStart;
+    public GameState State => _state;
+
+    private AIPlayer   _leftPlayer,  _topPlayer,  _rightPlayer;
+    private OpponentHandDisplay _leftDisplay, _topDisplay, _rightDisplay;
+    private AIPlayer[] _aiTurnOrder;
+    private int        _aiTurnIndex;
+
+    private GameObject _lastDiscardedTileObj;
+    private Tile       _claimTile;
+    private GameObject _activeClaimPopup;
+    private bool       _canMeldClaim;
+    private bool       _canMahjongClaim;
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -64,7 +91,21 @@ public class GameController : MonoBehaviour
     {
         _canvas = FindAnyObjectByType<Canvas>();
         _wall.Build();
-        _wall.Shuffle(new System.Random());
+        var rng = new System.Random();
+        _wall.Shuffle(rng);
+
+        _leftPlayer  = new AIPlayer(SeatPosition.Left,  rng);
+        _topPlayer   = new AIPlayer(SeatPosition.Top,   rng);
+        _rightPlayer = new AIPlayer(SeatPosition.Right, rng);
+        _aiTurnOrder = new AIPlayer[] { _rightPlayer, _topPlayer, _leftPlayer };
+
+        _leftDisplay  = leftOpponentHand.gameObject.AddComponent<OpponentHandDisplay>();
+        _topDisplay   = topOpponentHand.gameObject.AddComponent<OpponentHandDisplay>();
+        _rightDisplay = rightOpponentHand.gameObject.AddComponent<OpponentHandDisplay>();
+        _leftDisplay.Setup(_leftPlayer,   tileBackPrefab);
+        _topDisplay.Setup(_topPlayer,     tileBackPrefab);
+        _rightDisplay.Setup(_rightPlayer, tileBackPrefab);
+
         drawButton.onClick.AddListener(OnDrawButton);
         sortButton.onClick.AddListener(SortHand);
         UpdateWallCount();
@@ -86,18 +127,29 @@ public class GameController : MonoBehaviour
 
         if (handSize == 0)
         {
+            foreach (AIPlayer ai in _aiTurnOrder)
+            {
+                for (int i = 0; i < 13; i++)
+                    if (_wall.TryDraw(out Tile tile))
+                        AIDrawTile(ai, tile);
+                GetDisplayFor(ai).Sync();
+            }
+
             for (int i = 0; i < 13; i++)
                 if (_wall.TryDraw(out Tile tile))
                     AddTileToHand(tile);
+
+            _state = GameState.HumanDraw;
             tileDisplayText.text = "Hand ready! Draw your 14th tile.";
         }
-        else if (handSize == _targetHandSize)
+        else if (handSize == _targetHandSize && _state == GameState.HumanDraw)
         {
             if (_wall.TryDraw(out Tile tile))
             {
                 AddTileToHand(tile);
                 tileDisplayText.text = "Hand full! Drag a tile up to discard.";
                 drawButton.interactable = false;
+                _state = GameState.HumanDiscard;
                 CheckForMahjong();
             }
         }
@@ -203,14 +255,27 @@ public class GameController : MonoBehaviour
         RectTransformUtility.ScreenPointToLocalPointInRectangle(discardRect, screenPos, uiCam, out Vector2 localPos);
 
         Vector2 localVelocity = Vector2.ClampMagnitude(screenVelocity / _canvas.scaleFactor, 700f);
-        discardPhysics.Spawn(tileObj, localPos, localVelocity);
+
+        Sprite sprite   = tileObj.GetComponent<Image>().sprite;
+        Tile   tileData = tileObj.GetComponent<HandTileData>().tile;
+        tileObj.transform.SetParent(null);
+        Destroy(tileObj);
+
+        GameObject discardObj = Instantiate(discardedTilePrefab);
+        discardObj.GetComponent<Image>().sprite = sprite;
+        discardObj.AddComponent<HandTileData>().tile = tileData;
+
+        discardPhysics.Spawn(discardObj, localPos, localVelocity);
+        SetLastDiscardGlow(discardObj);
 
         RefreshHandPositions();
-        tileDisplayText.text = "Discarded. Draw your next tile.";
-        if (_wall.Remaining > 0) drawButton.interactable = true;
-
+        tileDisplayText.text = "Discarded. Waiting for other players...";
         UpdateWallCount();
         RefreshHandHighlights();
+
+        _aiTurnIndex = 0;
+        _state = GameState.AITurn;
+        StartCoroutine(RunAITurn(_aiTurnOrder[_aiTurnIndex]));
     }
 
     public void PushDiscardTilesAt(Vector2 screenPos)
@@ -339,17 +404,172 @@ public class GameController : MonoBehaviour
         {
             var highlight = tileObj.transform.Find("Highlight");
             if (highlight != null) highlight.GetComponent<Image>().color = Color.clear;
-
             Destroy(tileObj.GetComponent<HandTileDrag>());
             Destroy(tileObj.GetComponent<SmoothMove>());
             tileObj.transform.SetParent(scoringBox, false);
         }
 
         _targetHandSize -= meldTiles.Count;
-        drawButton.interactable = _wall.Remaining > 0;
         UpdateWallCount();
         RefreshHandPositions();
         RefreshHandHighlights();
+    }
+
+    // ── Claim window ──────────────────────────────────────────────────────────
+
+    void CheckForClaim(Tile tile, bool fromLeftPlayer)
+    {
+        List<Tile> hand = GetHumanHandTiles();
+
+        bool canPong = hand.FindAll(t => t.Equals(tile)).Count >= 2;
+        bool canKong = hand.FindAll(t => t.Equals(tile)).Count >= 3;
+        bool canChow = fromLeftPlayer && CanChowWith(hand, tile);
+        var handWithClaim = new List<Tile>(hand) { tile };
+        bool canMahjong = IsWinningHand(handWithClaim);
+
+        _canMeldClaim    = canPong || canKong || canChow;
+        _canMahjongClaim = canMahjong;
+
+        if (_canMeldClaim || _canMahjongClaim)
+        {
+            _state     = GameState.ClaimWindow;
+            _claimTile = tile;
+            SpawnClaimPopup();
+        }
+        else
+        {
+            AdvanceTurn();
+        }
+    }
+
+    void SpawnClaimPopup()
+    {
+        _activeClaimPopup = Instantiate(claimPopupPrefab, _canvas.transform);
+        _activeClaimPopup.GetComponent<RectTransform>().anchoredPosition = Vector2.zero;
+
+        Button claimBtn   = _activeClaimPopup.transform.Find("ClaimButton").GetComponent<Button>();
+        Button passBtn    = _activeClaimPopup.transform.Find("PassButton").GetComponent<Button>();
+        Button mahjongBtn = _activeClaimPopup.transform.Find("MahjongButton")?.GetComponent<Button>();
+
+        claimBtn.gameObject.SetActive(_canMeldClaim);
+        if (mahjongBtn != null)
+        {
+            mahjongBtn.gameObject.SetActive(_canMahjongClaim);
+            mahjongBtn.onClick.AddListener(OnMahjongClaim);
+        }
+
+        claimBtn.onClick.AddListener(OnClaim);
+        passBtn.onClick.AddListener(OnPass);
+    }
+
+    void OnClaim()
+    {
+        Destroy(_activeClaimPopup);
+
+        List<GameObject> meldGroup = FindMeldGroup(_claimTile);
+        AddTileToScoringBox(_claimTile);
+
+        if (meldGroup != null)
+        {
+            foreach (GameObject tileObj in meldGroup)
+            {
+                var highlight = tileObj.transform.Find("Highlight");
+                if (highlight != null) highlight.GetComponent<Image>().color = Color.clear;
+                Destroy(tileObj.GetComponent<HandTileDrag>());
+                Destroy(tileObj.GetComponent<SmoothMove>());
+                tileObj.transform.SetParent(scoringBox, false);
+            }
+            _targetHandSize -= meldGroup.Count + 1;
+        }
+
+        _state = GameState.HumanDiscard;
+        drawButton.interactable = false;
+        tileDisplayText.text = "You claimed! Discard a tile to continue.";
+        RefreshHandPositions();
+        RefreshHandHighlights();
+    }
+
+    void OnMahjongClaim()
+    {
+        Destroy(_activeClaimPopup);
+        AddTileToScoringBox(_claimTile);
+
+        for (int i = handContainer.childCount - 1; i >= 0; i--)
+        {
+            Transform child = handContainer.GetChild(i);
+            var highlight = child.Find("Highlight");
+            if (highlight != null) highlight.GetComponent<Image>().color = Color.clear;
+            Destroy(child.GetComponent<HandTileDrag>());
+            Destroy(child.GetComponent<SmoothMove>());
+            child.SetParent(scoringBox, false);
+        }
+
+        _state = GameState.GameOver;
+        drawButton.interactable = false;
+        tileDisplayText.text = "Mahjong!";
+        RefreshHandHighlights();
+    }
+
+    void OnPass()
+    {
+        Destroy(_activeClaimPopup);
+        AdvanceTurn();
+    }
+
+    List<GameObject> FindMeldGroup(Tile claimTile)
+    {
+        var handTiles = new List<(GameObject obj, Tile tile)>();
+        for (int i = 0; i < handContainer.childCount; i++)
+        {
+            var child = handContainer.GetChild(i);
+            var data = child.GetComponent<HandTileData>();
+            if (data != null) handTiles.Add((child.gameObject, data.tile));
+        }
+
+        var matches = handTiles.FindAll(t => t.tile.Equals(claimTile));
+        if (matches.Count >= 3) return matches.GetRange(0, 3).ConvertAll(t => t.obj);
+        if (matches.Count >= 2) return matches.GetRange(0, 2).ConvertAll(t => t.obj);
+
+        if (claimTile.Suit == Suit.Circles || claimTile.Suit == Suit.Bamboo || claimTile.Suit == Suit.Characters)
+        {
+            GameObject Find(int value) =>
+                handTiles.Find(t => t.tile.Suit == claimTile.Suit && t.tile.Value == value).obj;
+
+            int v = claimTile.Value;
+            var a = Find(v - 2); var b = Find(v - 1);
+            if (a != null && b != null) return new List<GameObject> { a, b };
+
+            var c = Find(v - 1); var d = Find(v + 1);
+            if (c != null && d != null) return new List<GameObject> { c, d };
+
+            var e = Find(v + 1); var f = Find(v + 2);
+            if (e != null && f != null) return new List<GameObject> { e, f };
+        }
+
+        return null;
+    }
+
+    List<Tile> GetHumanHandTiles()
+    {
+        var result = new List<Tile>();
+        for (int i = 0; i < handContainer.childCount; i++)
+        {
+            var data = handContainer.GetChild(i).GetComponent<HandTileData>();
+            if (data != null) result.Add(data.tile);
+        }
+        return result;
+    }
+
+    bool CanChowWith(List<Tile> hand, Tile tile)
+    {
+        if (tile.Suit == Suit.Wind   || tile.Suit == Suit.Dragon ||
+            tile.Suit == Suit.Flower || tile.Suit == Suit.Season) return false;
+
+        bool Has(int v) => hand.Exists(t => t.Suit == tile.Suit && t.Value == v);
+
+        return (tile.Value >= 3 && Has(tile.Value - 2) && Has(tile.Value - 1))
+            || (tile.Value >= 2 && tile.Value <= 8 && Has(tile.Value - 1) && Has(tile.Value + 1))
+            || (tile.Value <= 7 && Has(tile.Value + 1) && Has(tile.Value + 2));
     }
 
     // ── Win detection ─────────────────────────────────────────────────────────
@@ -455,10 +675,91 @@ public class GameController : MonoBehaviour
         }
 
         Destroy(popup);
+        _state = GameState.GameOver;
         drawButton.interactable = false;
         tileDisplayText.text = "Mahjong!";
         RefreshHandHighlights();
     }
+
+    // ── AI turns ──────────────────────────────────────────────────────────────
+
+    IEnumerator RunAITurn(AIPlayer ai)
+    {
+        yield return new WaitForSeconds(0.6f);
+
+        if (_wall.TryDraw(out Tile drawn))
+            AIDrawTile(ai, drawn);
+        GetDisplayFor(ai).Sync();
+
+        yield return new WaitForSeconds(0.8f);
+
+        if (ai.Hand.Count == 0) { AdvanceTurn(); yield break; }
+
+        Tile discarded = ai.Discard();
+        GetDisplayFor(ai).Sync();
+        SpawnAIDiscard(discarded);
+
+        CheckForClaim(discarded, ai.Seat == SeatPosition.Left);
+    }
+
+    void SpawnAIDiscard(Tile tile)
+    {
+        GameObject tileObj = Instantiate(discardedTilePrefab);
+        tileObj.GetComponent<Image>().sprite = tileSprites[GetSpriteIndex(tile)];
+        tileObj.AddComponent<HandTileData>().tile = tile;
+        Destroy(tileObj.GetComponent<HandTileDrag>());
+        Destroy(tileObj.GetComponent<SmoothMove>());
+
+        Rect b = discardPhysics.GetComponent<RectTransform>().rect;
+        Vector2 localPos = new Vector2(
+            UnityEngine.Random.Range(b.xMin * 0.5f, b.xMax * 0.5f),
+            UnityEngine.Random.Range(b.yMin * 0.5f, b.yMax * 0.5f)
+        );
+        Vector2 velocity = new Vector2(
+            UnityEngine.Random.Range(-150f, 150f),
+            UnityEngine.Random.Range(-150f, 150f)
+        );
+
+        discardPhysics.Spawn(tileObj, localPos, velocity);
+        SetLastDiscardGlow(tileObj);
+    }
+
+    void AdvanceTurn()
+    {
+        _aiTurnIndex++;
+
+        if (_aiTurnIndex < _aiTurnOrder.Length)
+        {
+            StartCoroutine(RunAITurn(_aiTurnOrder[_aiTurnIndex]));
+        }
+        else
+        {
+            _aiTurnIndex = 0;
+            _state = GameState.HumanDraw;
+            if (_wall.Remaining > 0) drawButton.interactable = true;
+            tileDisplayText.text = "Your turn! Draw a tile.";
+            UpdateWallCount();
+        }
+    }
+
+    void AIDrawTile(AIPlayer ai, Tile tile)
+    {
+        if (tile.IsBonusTile)
+        {
+            if (_wall.TryDraw(out Tile replacement))
+                AIDrawTile(ai, replacement);
+            return;
+        }
+        ai.DrawTile(tile);
+    }
+
+    OpponentHandDisplay GetDisplayFor(AIPlayer ai) => ai.Seat switch
+    {
+        SeatPosition.Left  => _leftDisplay,
+        SeatPosition.Top   => _topDisplay,
+        SeatPosition.Right => _rightDisplay,
+        _                  => null
+    };
 
     // ── Utilities ─────────────────────────────────────────────────────────────
 
@@ -475,6 +776,20 @@ public class GameController : MonoBehaviour
     };
 
     void UpdateWallCount() => wallCountText.text = $"Tiles remaining: {_wall.Remaining}";
+
+    void SetLastDiscardGlow(GameObject tileObj)
+    {
+        if (_lastDiscardedTileObj != null)
+        {
+            var old = _lastDiscardedTileObj.transform.Find("Highlight");
+            if (old != null) old.GetComponent<Image>().color = Color.clear;
+        }
+
+        var highlight = tileObj.transform.Find("Highlight");
+        if (highlight != null) highlight.GetComponent<Image>().color = lastDiscardGlowColor;
+
+        _lastDiscardedTileObj = tileObj;
+    }
 
     static Color HexColor(string hex)
     {
