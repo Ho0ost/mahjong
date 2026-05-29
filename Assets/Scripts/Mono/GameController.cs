@@ -36,7 +36,7 @@ public class GameController : MonoBehaviour
 
     [Header("Meld Popups")]
     [SerializeField] private GameObject meldPopupPrefab;
-    [SerializeField] private float meldPopupYOffset = 120f;  
+    [SerializeField] private float meldPopupYOffset = 120f;
     [SerializeField] private RectTransform handPopupLayer;
     [SerializeField] private Sprite pongSprite;
     [SerializeField] private Sprite kongSprite;
@@ -45,25 +45,20 @@ public class GameController : MonoBehaviour
     [Header("Mahjong")]
     [SerializeField] private GameObject mahjongPopupPrefab;
 
+    private const float TileWidth   = 124f;
+    private const float TileSpacing = 5f;
+    private const float TileStep    = TileWidth + TileSpacing;
+
     private readonly List<GameObject> _activeMeldPopups = new();
-
-    static Color HexColor(string hex)
-    { 
-        ColorUtility.TryParseHtmlString(hex, out Color c);
-        return c;
-    }
-
-    
     private int _targetHandSize = 13;
     public int TargetHandSize => _targetHandSize;
 
     private Wall _wall = new Wall();
     private Canvas _canvas;
 
-    void Awake()
-    {
-        Instance = this;
-    }
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    void Awake() => Instance = this;
 
     void Start()
     {
@@ -76,12 +71,14 @@ public class GameController : MonoBehaviour
     }
 
     void Update()
-        {
-            if (Keyboard.current.spaceKey.wasPressedThisFrame && drawButton.interactable)
-                OnDrawButton();
-            if (Keyboard.current.sKey.wasPressedThisFrame)
-                SortHand();
-        }
+    {
+        if (Keyboard.current.spaceKey.wasPressedThisFrame && drawButton.interactable)
+            OnDrawButton();
+        if (Keyboard.current.sKey.wasPressedThisFrame)
+            SortHand();
+    }
+
+    // ── Drawing ───────────────────────────────────────────────────────────────
 
     void OnDrawButton()
     {
@@ -90,10 +87,8 @@ public class GameController : MonoBehaviour
         if (handSize == 0)
         {
             for (int i = 0; i < 13; i++)
-            {
                 if (_wall.TryDraw(out Tile tile))
                     AddTileToHand(tile);
-            }
             tileDisplayText.text = "Hand ready! Draw your 14th tile.";
         }
         else if (handSize == _targetHandSize)
@@ -103,7 +98,7 @@ public class GameController : MonoBehaviour
                 AddTileToHand(tile);
                 tileDisplayText.text = "Hand full! Drag a tile up to discard.";
                 drawButton.interactable = false;
-                CheckForMahjong(); 
+                CheckForMahjong();
             }
         }
 
@@ -111,23 +106,63 @@ public class GameController : MonoBehaviour
         RefreshHandHighlights();
     }
 
+    void AddTileToHand(Tile tile)
+    {
+        if (tile.IsBonusTile)
+        {
+            AddTileToScoringBox(tile);
+            if (_wall.TryDraw(out Tile replacement))
+                AddTileToHand(replacement);
+            return;
+        }
+
+        GameObject tileObj = Instantiate(handTilePrefab, handContainer);
+        tileObj.GetComponent<Image>().sprite = tileSprites[GetSpriteIndex(tile)];
+        tileObj.AddComponent<HandTileData>().tile = tile;
+        RefreshHandPositions();
+    }
+
+    void AddTileToScoringBox(Tile tile)
+    {
+        GameObject tileObj = Instantiate(handTilePrefab, scoringBox);
+        tileObj.GetComponent<Image>().sprite = tileSprites[GetSpriteIndex(tile)];
+        tileObj.AddComponent<HandTileData>().tile = tile;
+        Destroy(tileObj.GetComponent<HandTileDrag>());
+        Destroy(tileObj.GetComponent<SmoothMove>());
+    }
+
+    // ── Hand management ───────────────────────────────────────────────────────
+
+    public void RefreshHandPositions()
+    {
+        int count = handContainer.childCount;
+        float totalWidth = count * TileWidth + (count - 1) * TileSpacing;
+        float startX = -totalWidth / 2f + TileWidth / 2f;
+
+        for (int i = 0; i < count; i++)
+        {
+            RectTransform rt = handContainer.GetChild(i).GetComponent<RectTransform>();
+            SmoothMove sm = rt.GetComponent<SmoothMove>();
+            if (sm != null)
+                sm.MoveTo(new Vector2(startX + i * TileStep, 0));
+            else
+                rt.anchoredPosition = new Vector2(startX + i * TileStep, 0);
+        }
+    }
+
     void SortHand()
     {
         int count = handContainer.childCount;
+        var tiles = new List<(Transform obj, int key)>();
 
-        // Pair each child with a numeric sort key
-        var tiles = new System.Collections.Generic.List<(Transform obj, int key)>();
         for (int i = 0; i < count; i++)
         {
             Transform child = handContainer.GetChild(i);
             HandTileData data = child.GetComponent<HandTileData>();
-            int key = data != null ? SortKey(data.tile) : int.MaxValue;
-            tiles.Add((child, key));
+            tiles.Add((child, data != null ? SortKey(data.tile) : int.MaxValue));
         }
 
         tiles.Sort((a, b) => a.key.CompareTo(b.key));
-
-        // Apply the new order by updating sibling indices
         for (int i = 0; i < tiles.Count; i++)
             tiles[i].obj.SetSiblingIndex(i);
 
@@ -147,58 +182,13 @@ public class GameController : MonoBehaviour
         _               => 5
     };
 
-    void AddTileToScoringBox(Tile tile)
-    {
-        GameObject tileObj = Instantiate(handTilePrefab, scoringBox);
-        tileObj.GetComponent<Image>().sprite = tileSprites[GetSpriteIndex(tile)];
-        tileObj.AddComponent<HandTileData>().tile = tile;
-        Destroy(tileObj.GetComponent<HandTileDrag>());
-        Destroy(tileObj.GetComponent<SmoothMove>());
-    }
+    // ── Discard ───────────────────────────────────────────────────────────────
 
-    void AddTileToHand(Tile tile)
-    {
-        if (tile.IsBonusTile)
-        {
-            AddTileToScoringBox(tile);
-            if (_wall.TryDraw(out Tile replacement))
-                AddTileToHand(replacement);
-            return;
-        }
-
-        GameObject tileObj = Instantiate(handTilePrefab, handContainer);
-        tileObj.GetComponent<Image>().sprite = tileSprites[GetSpriteIndex(tile)];
-        tileObj.AddComponent<HandTileData>().tile = tile;  
-        RefreshHandPositions();
-    }
-
-    public void RefreshHandPositions()
-    {
-        int count = handContainer.childCount;
-        float totalWidth = count * 124f + (count - 1) * 5f;
-        float startX = -totalWidth / 2f + 124f / 2f;
-
-        for (int i = 0; i < count; i++)
-        {
-            RectTransform rt = handContainer.GetChild(i).GetComponent<RectTransform>();
-            SmoothMove sm = rt.GetComponent<SmoothMove>();
-            if (sm != null)
-                sm.MoveTo(new Vector2(startX + i * 129f, 0));
-            else
-                rt.anchoredPosition = new Vector2(startX + i * 129f, 0);
-        }
-    }
-
-    // Called by HandTileDrag.OnEndDrag when the player discards.
-    // screenPos      — where the pointer was released, in screen pixels
-    // screenVelocity — pointer velocity in screen pixels/second
     public void DiscardTile(GameObject tileObj, Vector2 screenPos, Vector2 screenVelocity)
     {
-        // Restore visual state that was changed during dragging
         CanvasGroup cg = tileObj.GetComponent<CanvasGroup>();
         if (cg != null) { cg.alpha = 1f; cg.blocksRaycasts = true; }
 
-        // Stop any in-progress SmoothMove animation before handing off
         SmoothMove sm = tileObj.GetComponent<SmoothMove>();
         if (sm != null)
         {
@@ -206,27 +196,18 @@ public class GameController : MonoBehaviour
             Destroy(sm);
         }
 
-        // Remove drag behavior; tile is now a physics object
         Destroy(tileObj.GetComponent<HandTileDrag>());
 
-        // Convert release position from screen space to DiscardContainer local space
+        Camera uiCam = _canvas.renderMode == RenderMode.ScreenSpaceOverlay ? null : _canvas.worldCamera;
         RectTransform discardRect = discardPhysics.GetComponent<RectTransform>();
-        Camera uiCam = _canvas.renderMode == RenderMode.ScreenSpaceOverlay
-            ? null
-            : _canvas.worldCamera;
-        RectTransformUtility.ScreenPointToLocalPointInRectangle(
-            discardRect, screenPos, uiCam, out Vector2 localPos);
+        RectTransformUtility.ScreenPointToLocalPointInRectangle(discardRect, screenPos, uiCam, out Vector2 localPos);
 
-        // Convert velocity: screen px/s → canvas px/s, then cap so tiles don't rocket
         Vector2 localVelocity = Vector2.ClampMagnitude(screenVelocity / _canvas.scaleFactor, 700f);
-
         discardPhysics.Spawn(tileObj, localPos, localVelocity);
 
         RefreshHandPositions();
-
         tileDisplayText.text = "Discarded. Draw your next tile.";
-        if (_wall.Remaining > 0)
-            drawButton.interactable = true;
+        if (_wall.Remaining > 0) drawButton.interactable = true;
 
         UpdateWallCount();
         RefreshHandHighlights();
@@ -234,46 +215,22 @@ public class GameController : MonoBehaviour
 
     public void PushDiscardTilesAt(Vector2 screenPos)
     {
-        Camera uiCam = _canvas.renderMode == RenderMode.ScreenSpaceOverlay
-            ? null : _canvas.worldCamera;
+        Camera uiCam = _canvas.renderMode == RenderMode.ScreenSpaceOverlay ? null : _canvas.worldCamera;
         RectTransform discardRect = discardPhysics.GetComponent<RectTransform>();
-        RectTransformUtility.ScreenPointToLocalPointInRectangle(
-            discardRect, screenPos, uiCam, out Vector2 localPos);
+        RectTransformUtility.ScreenPointToLocalPointInRectangle(discardRect, screenPos, uiCam, out Vector2 localPos);
         discardPhysics.PushWithTile(localPos);
     }
 
-    public RectTransform GetDiscardRect()
-        => discardPhysics.GetComponent<RectTransform>();
+    public RectTransform GetDiscardRect() => discardPhysics.GetComponent<RectTransform>();
 
-    void UpdateWallCount()
-    {
-        wallCountText.text = $"Tiles remaining: {_wall.Remaining}";
-    }
+    // ── Meld highlights ───────────────────────────────────────────────────────
 
-    int GetSpriteIndex(Tile tile)
-    {
-        return tile.Suit switch
-        {
-            Suit.Circles    => 0  + (tile.Value - 1),
-            Suit.Bamboo     => 9  + (tile.Value - 1),
-            Suit.Characters => 18 + (tile.Value - 1),
-            Suit.Wind       => 27 + (tile.Value - 1),
-            Suit.Dragon     => 31 + (tile.Value - 1),
-            Suit.Flower     => 34 + (tile.Value - 1),
-            Suit.Season     => 38 + (tile.Value - 1),
-            _ => 0
-        };
-    }
-
-    // set detection
     public void RefreshHandHighlights()
     {
-
         foreach (var popup in _activeMeldPopups)
             if (popup != null) Destroy(popup);
         _activeMeldPopups.Clear();
 
-        // maybe fuckt?
         var tileList = new List<HandTileData>();
         for (int i = 0; i < handContainer.childCount; i++)
         {
@@ -283,118 +240,48 @@ public class GameController : MonoBehaviour
         var tiles = tileList.ToArray();
         int count = tiles.Length;
 
-        // Clear all existing outlines
         foreach (var td in tiles)
         {
-            if (td == null) continue;
             var highlight = td.transform.Find("Highlight");
-            if (highlight != null)
-                highlight.GetComponent<Image>().color = Color.clear;
+            if (highlight != null) highlight.GetComponent<Image>().color = Color.clear;
         }
 
         var marked = new bool[count];
 
-        // Kong: 4 consecutive identical tiles
         for (int i = 0; i <= count - 4; i++)
         {
-            if (tiles[i]?.tile == null) continue;
-            if (IsKong(tiles, i))
-            {
-                for (int k = i; k < i + 4; k++) { marked[k] = true; ApplyHighlight(tiles[k].gameObject, kongColor); }
-                var kongTiles = new List<GameObject>();
-                for (int k = i; k < i + 4; k++) kongTiles.Add(tiles[k].gameObject);
-                SpawnMeldPopup(kongTiles, MeldType.Kong, i, 4);
-            }
+            if (tiles[i]?.tile == null || !IsKong(tiles, i)) continue;
+            for (int k = i; k < i + 4; k++) { marked[k] = true; ApplyHighlight(tiles[k].gameObject, kongColor); }
+            var meldTiles = new List<GameObject>();
+            for (int k = i; k < i + 4; k++) meldTiles.Add(tiles[k].gameObject);
+            SpawnMeldPopup(meldTiles, MeldType.Kong, i, 4);
         }
 
-        // Pong: 3 consecutive identical tiles
         for (int i = 0; i <= count - 3; i++)
         {
-            if (marked[i] || marked[i+1] || marked[i+2]) continue;
-            if (tiles[i]?.tile == null) continue;
-            if (IsPong(tiles, i))
-            {
-                for (int k = i; k < i + 3; k++) { marked[k] = true; ApplyHighlight(tiles[k].gameObject, pongColor); }
-                var pongTiles = new List<GameObject>();
-                for (int k = i; k < i + 3; k++) pongTiles.Add(tiles[k].gameObject);
-                SpawnMeldPopup(pongTiles, MeldType.Pong, i, 3);
-            }
+            if (marked[i] || marked[i+1] || marked[i+2] || tiles[i]?.tile == null) continue;
+            if (!IsPong(tiles, i)) continue;
+            for (int k = i; k < i + 3; k++) { marked[k] = true; ApplyHighlight(tiles[k].gameObject, pongColor); }
+            var meldTiles = new List<GameObject>();
+            for (int k = i; k < i + 3; k++) meldTiles.Add(tiles[k].gameObject);
+            SpawnMeldPopup(meldTiles, MeldType.Pong, i, 3);
         }
 
-        // Chow: 3 consecutive tiles of same number suit, ascending values
         for (int i = 0; i <= count - 3; i++)
         {
-            if (marked[i] || marked[i+1] || marked[i+2]) continue;
-            if (tiles[i]?.tile == null) continue;
-            if (IsChow(tiles, i))
-            {
-                for (int k = i; k < i + 3; k++) { marked[k] = true; ApplyHighlight(tiles[k].gameObject, chowColor); }
-                var chowTiles = new List<GameObject>();
-                for (int k = i; k < i + 3; k++) chowTiles.Add(tiles[k].gameObject);
-                SpawnMeldPopup(chowTiles, MeldType.Chow, i, 3);
-            }
+            if (marked[i] || marked[i+1] || marked[i+2] || tiles[i]?.tile == null) continue;
+            if (!IsChow(tiles, i)) continue;
+            for (int k = i; k < i + 3; k++) { marked[k] = true; ApplyHighlight(tiles[k].gameObject, chowColor); }
+            var meldTiles = new List<GameObject>();
+            for (int k = i; k < i + 3; k++) meldTiles.Add(tiles[k].gameObject);
+            SpawnMeldPopup(meldTiles, MeldType.Chow, i, 3);
         }
     }
 
-    void SpawnMeldPopup(List<GameObject> meldTiles, MeldType type, int startIndex, int length)
+    void ApplyHighlight(GameObject obj, Color color)
     {
-        Camera uiCam = _canvas.renderMode == RenderMode.ScreenSpaceOverlay ? null : _canvas.worldCamera;
-
-        int count = handContainer.childCount;
-        float totalWidth = count * 124f + (count - 1) * 5f;
-        float startX = -totalWidth / 2f + 124f / 2f;
-        int centerIndex = startIndex + (length - 1) / 2;
-        float centerX = startX + centerIndex * 129f;
-
-        Vector3 worldPos = handContainer.TransformPoint(new Vector3(centerX, 0f, 0f));
-        Vector2 screenPos = RectTransformUtility.WorldToScreenPoint(uiCam, worldPos);
-        RectTransformUtility.ScreenPointToLocalPointInRectangle(
-            handPopupLayer, screenPos, uiCam, out Vector2 localPos);
-            
-        localPos.y += meldPopupYOffset;
-
-        GameObject popup = Instantiate(meldPopupPrefab, handPopupLayer);
-        Sprite icon = type switch
-        {
-            MeldType.Pong => pongSprite,
-            MeldType.Kong => kongSprite,
-            MeldType.Chow => chowSprite,
-            _             => null
-        };
-        popup.GetComponent<Image>().sprite = icon;
-
-        popup.GetComponent<RectTransform>().anchoredPosition = localPos;
-
-        var captured = meldTiles;
-        popup.GetComponent<Button>().onClick.AddListener(() => ClaimMeld(captured));
-        _activeMeldPopups.Add(popup);
-
-    }
-
-    void ClaimMeld(List<GameObject> meldTiles)
-    {
-        foreach (GameObject tileObj in meldTiles)
-        {
-            // Clear highlight
-            var highlight = tileObj.transform.Find("Highlight");
-            if (highlight != null)
-                highlight.GetComponent<Image>().color = Color.clear;
-
-            // Strip hand-only components
-            Destroy(tileObj.GetComponent<HandTileDrag>());
-            Destroy(tileObj.GetComponent<SmoothMove>());
-
-
-            tileObj.transform.SetParent(scoringBox, false);
-        }
-
-        _targetHandSize -= meldTiles.Count;
-
-        drawButton.interactable = _wall.Remaining > 0;
-        UpdateWallCount();
-
-        RefreshHandPositions();
-        RefreshHandHighlights(); // also clears the popup
+        var highlight = obj.transform.Find("Highlight");
+        if (highlight != null) highlight.GetComponent<Image>().color = color;
     }
 
     bool IsKong(HandTileData[] t, int i) =>
@@ -415,12 +302,57 @@ public class GameController : MonoBehaviour
         return b.Value == a.Value + 1 && c.Value == b.Value + 1;
     }
 
-    void ApplyHighlight(GameObject obj, Color color)
+    // ── Meld popup / claim ────────────────────────────────────────────────────
+
+    void SpawnMeldPopup(List<GameObject> meldTiles, MeldType type, int startIndex, int length)
     {
-        var highlight = obj.transform.Find("Highlight");
-        if (highlight != null)
-            highlight.GetComponent<Image>().color = color;
+        Camera uiCam = _canvas.renderMode == RenderMode.ScreenSpaceOverlay ? null : _canvas.worldCamera;
+
+        int count = handContainer.childCount;
+        float totalWidth = count * TileWidth + (count - 1) * TileSpacing;
+        float startX = -totalWidth / 2f + TileWidth / 2f;
+        float centerX = startX + (startIndex + (length - 1) / 2f) * TileStep;
+
+        Vector3 worldPos = handContainer.TransformPoint(new Vector3(centerX, 0f, 0f));
+        Vector2 screenPos = RectTransformUtility.WorldToScreenPoint(uiCam, worldPos);
+        RectTransformUtility.ScreenPointToLocalPointInRectangle(handPopupLayer, screenPos, uiCam, out Vector2 localPos);
+        localPos.y += meldPopupYOffset;
+
+        GameObject popup = Instantiate(meldPopupPrefab, handPopupLayer);
+        popup.GetComponent<RectTransform>().anchoredPosition = localPos;
+        popup.GetComponent<Image>().sprite = type switch
+        {
+            MeldType.Pong => pongSprite,
+            MeldType.Kong => kongSprite,
+            MeldType.Chow => chowSprite,
+            _             => null
+        };
+
+        var captured = meldTiles;
+        popup.GetComponent<Button>().onClick.AddListener(() => ClaimMeld(captured));
+        _activeMeldPopups.Add(popup);
     }
+
+    void ClaimMeld(List<GameObject> meldTiles)
+    {
+        foreach (GameObject tileObj in meldTiles)
+        {
+            var highlight = tileObj.transform.Find("Highlight");
+            if (highlight != null) highlight.GetComponent<Image>().color = Color.clear;
+
+            Destroy(tileObj.GetComponent<HandTileDrag>());
+            Destroy(tileObj.GetComponent<SmoothMove>());
+            tileObj.transform.SetParent(scoringBox, false);
+        }
+
+        _targetHandSize -= meldTiles.Count;
+        drawButton.interactable = _wall.Remaining > 0;
+        UpdateWallCount();
+        RefreshHandPositions();
+        RefreshHandHighlights();
+    }
+
+    // ── Win detection ─────────────────────────────────────────────────────────
 
     List<Tile> GetAllNonBonusTiles()
     {
@@ -447,12 +379,11 @@ public class GameController : MonoBehaviour
         for (int i = 0; i < tiles.Count - 1; i++)
         {
             if (!tiles[i].Equals(tiles[i + 1])) continue;
-            if (i > 0 && tiles[i].Equals(tiles[i - 1])) continue; // skip duplicate pair attempts
+            if (i > 0 && tiles[i].Equals(tiles[i - 1])) continue;
 
             var remaining = new List<Tile>(tiles);
             remaining.RemoveAt(i + 1);
             remaining.RemoveAt(i);
-
             if (CanFormSets(remaining)) return true;
         }
         return false;
@@ -464,14 +395,12 @@ public class GameController : MonoBehaviour
 
         Tile first = tiles[0];
 
-        // Try pong (3 same)
         if (tiles.Count >= 3 && tiles[1].Equals(first) && tiles[2].Equals(first))
         {
             var remaining = new List<Tile>(tiles);
             remaining.RemoveRange(0, 3);
             if (CanFormSets(remaining)) return true;
 
-            // Also try kong (4 same) if available
             if (tiles.Count >= 4 && tiles[3].Equals(first))
             {
                 remaining = new List<Tile>(tiles);
@@ -480,7 +409,6 @@ public class GameController : MonoBehaviour
             }
         }
 
-        // Try chow (3 consecutive, number suits only)
         if (first.Suit == Suit.Circles || first.Suit == Suit.Bamboo || first.Suit == Suit.Characters)
         {
             int idx1 = -1, idx2 = -1;
@@ -516,7 +444,6 @@ public class GameController : MonoBehaviour
 
     void OnMahjong(GameObject popup)
     {
-        // Move all remaining hand tiles to scoring box
         for (int i = handContainer.childCount - 1; i >= 0; i--)
         {
             Transform child = handContainer.GetChild(i);
@@ -531,5 +458,27 @@ public class GameController : MonoBehaviour
         drawButton.interactable = false;
         tileDisplayText.text = "Mahjong!";
         RefreshHandHighlights();
+    }
+
+    // ── Utilities ─────────────────────────────────────────────────────────────
+
+    int GetSpriteIndex(Tile tile) => tile.Suit switch
+    {
+        Suit.Circles    => 0  + (tile.Value - 1),
+        Suit.Bamboo     => 9  + (tile.Value - 1),
+        Suit.Characters => 18 + (tile.Value - 1),
+        Suit.Wind       => 27 + (tile.Value - 1),
+        Suit.Dragon     => 31 + (tile.Value - 1),
+        Suit.Flower     => 34 + (tile.Value - 1),
+        Suit.Season     => 38 + (tile.Value - 1),
+        _               => 0
+    };
+
+    void UpdateWallCount() => wallCountText.text = $"Tiles remaining: {_wall.Remaining}";
+
+    static Color HexColor(string hex)
+    {
+        ColorUtility.TryParseHtmlString(hex, out Color c);
+        return c;
     }
 }
